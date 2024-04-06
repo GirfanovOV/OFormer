@@ -124,12 +124,12 @@ class TransformerModel(nn.Module):
         # Rotary posistional embeddings stuff
         self.max_seq_len = max_seq_len
         
-        # self.freqs_cis = precompute_freqs_cis(model_dim // num_heads, self.max_seq_len + 2 * len(self.model_in_special_toks))
+        self.freqs_cis = precompute_freqs_cis(model_dim // num_heads, self.max_seq_len + 2)
         
         # TODO: Fix this stange formula (self.max_seq_len + 2 * num_special_toks)
         # TODO: Fix persistent=True -> switch to False and see what happen
-        freqs_cis = precompute_freqs_cis(model_dim // num_heads, self.max_seq_len + 2)
-        self.register_buffer("freqs_cis", freqs_cis, persistent=True)
+        # freqs_cis = precompute_freqs_cis(model_dim // num_heads, self.max_seq_len + 2)
+        # self.register_buffer("freqs_cis", freqs_cis, persistent=True)
 
         # proper weight init
         self.apply(self._init_weights)

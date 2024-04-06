@@ -7,7 +7,7 @@ from torch.nn.utils import clip_grad_norm_
 import torchvision
 from torchvision.transforms import v2
 
-from torch.utils.data import DataLoader
+from torch.utils.data import Dataset, DataLoader
 
 import torch.optim as optim
 from tqdm import tqdm
@@ -69,13 +69,28 @@ def get_tarining_config(args):
     return config
 
 # TODO: set num_workers
-def prepare_dataset(args):
+def prepare_dataset(args, tokenizer):
     ds_path = "MNIST/"
     transforms = v2.Compose([v2.ToImage(), v2.ToDtype(torch.long)])
     mnist_train = torchvision.datasets.MNIST(ds_path, train=True, download=True, transform=transforms)
 
+    
+    class MNIST_GPT_Dataset(Dataset):
+        def __init__(self, mnist_dataset):
+            x = mnist_dataset.data
+            y = mnist_dataset.targets
+            self.data = tokenizer.encode(x.flatten(start_dim=1), y.tolist())
+        
+        def __getitem__(self, index):
+            return self.data[index]
+        
+        def __len__(self):
+            return self.data.shape[0]
+        
+    ds = MNIST_GPT_Dataset(mnist_train)
+
     train_dataloader = DataLoader(
-        mnist_train,
+        ds,
         batch_size=args.batch_size,
         shuffle=True,
         pin_memory=True,
@@ -86,25 +101,13 @@ def prepare_dataset(args):
 # TODO: add AMP and GradScaler
 def train_step(accelerator, tokenizer, model, optimizer, batch, loss_fn):
     optimizer.zero_grad(set_to_none=True)
-    x, y = batch
-
-    # x = x.to(device).flatten(start_dim=1)
-    # y = model.encode_cls(y.tolist()).to(device)
-
-    # x = x.flatten(start_dim=1)
-    # y = model.encode_cls(y.tolist())
-
-    data = tokenizer.encode(x.flatten(start_dim=1), y.tolist()).to(accelerator.device)
-    model_in = data[:,:-1]
-
+    
+    model_in = batch[:,:-1 ]
     model_out = model(model_in)
     model_out = model_out.reshape((-1, tokenizer.model_out_vocab_size))
 
-    target = data[:,1:].flatten()
-    # target = target.flatten()
-
+    target = batch[:,1:].flatten()
     loss = loss_fn(model_out, target)
-    # loss.backward()
     accelerator.backward(loss)
 
     clip_grad_norm_(model.parameters(), 1.0)
@@ -137,7 +140,7 @@ def train(accelerator, args):
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         epoch = checkpoint['epoch']
 
-    dataloader = prepare_dataset(args)
+    dataloader = prepare_dataset(args, tokenizer)
     
     cls_weights = torch.ones((256))
     cls_weights[0] = .1
