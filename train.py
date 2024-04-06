@@ -1,7 +1,7 @@
 import os
 import argparse
 
-from models.MNIST_GPT import TransformerModel
+from models.MNIST_GPT import TransformerModel, MNIST_GPT_tokenizer
 import torch
 from torch.nn.utils import clip_grad_norm_
 import torchvision
@@ -41,14 +41,15 @@ def check_args(args):
         return False
     return True
 
-def get_model(args):
+def get_model_and_tokenizer(args):
     num_img_toks = 256
     special_toks = [i for i in range(10)] # num cls in MNIST
     max_seq_len = 28 * 28
 
+    tokenizer = MNIST_GPT_tokenizer(num_img_toks, special_toks)
     model = TransformerModel(
-        num_img_toks=num_img_toks,
-        special_toks=special_toks,
+        model_in_vocab_size=tokenizer.model_in_vocab_size,
+        model_out_vocab_size=tokenizer.model_out_vocab_size,
         num_layers=args.transformer_num_layers,
         max_seq_len=max_seq_len,
         model_dim=args.transformer_model_dim,
@@ -56,7 +57,7 @@ def get_model(args):
         ff_dim=args.transformer_ff_dim,
         dropout=args.transformer_dropout
     )
-    return model
+    return model, tokenizer
 
 def get_tarining_config(args):
     config = {
@@ -83,24 +84,24 @@ def prepare_dataset(args):
     return train_dataloader
 
 # TODO: add AMP and GradScaler
-def train_step(device, model, optimizer, batch, loss_fn):
+def train_step(accelerator, tokenizer, model, optimizer, batch, loss_fn):
     optimizer.zero_grad(set_to_none=True)
-
-    x = batch[0]
-    y = batch[1]
+    x, y = batch
 
     # x = x.to(device).flatten(start_dim=1)
     # y = model.encode_cls(y.tolist()).to(device)
 
-    x = x.flatten(start_dim=1)
-    y = model.encode_cls(y.tolist())
+    # x = x.flatten(start_dim=1)
+    # y = model.encode_cls(y.tolist())
 
-    model_in = x[:,:-1]
-    model_out = model(model_in, y)
-    model_out = model_out.reshape((-1, model.model_out_vocab_size))
+    data = tokenizer.encode(x.flatten(start_dim=1), y.tolist()).to(accelerator.device)
+    model_in = data[:,:-1]
 
-    target = x
-    target = target.flatten()
+    model_out = model(model_in)
+    model_out = model_out.reshape((-1, tokenizer.model_out_vocab_size))
+
+    target = data[:,1:].flatten()
+    # target = target.flatten()
 
     loss = loss_fn(model_out, target)
     # loss.backward()
@@ -116,17 +117,17 @@ def train_step(device, model, optimizer, batch, loss_fn):
 # TODO: add train & test dataloaders
 # TODO: add Scheduler
 # TODO: add GardNorm
-def train_epoch(accelerator, epoch, model, optimizer, dataloader, loss_fn, args):
+def train_epoch(accelerator, epoch, tokenizer, model, optimizer, dataloader, loss_fn, args):
     t = tqdm(dataloader)
     t.set_description(f"Epoch: {epoch: >3}/{args.num_epoch}")
     
     for n, batch in enumerate(t):
-        loss_val = train_step(accelerator, model, optimizer, batch, loss_fn)        
+        loss_val = train_step(accelerator, tokenizer, model, optimizer, batch, loss_fn)        
         t.set_postfix_str(f"Loss: {loss_val:.4}")
 
 def train(accelerator, args):
 
-    model = get_model(args)
+    model, tokenizer = get_model_and_tokenizer(args)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr_warmup_steps)
 
     epoch = 0
@@ -145,7 +146,7 @@ def train(accelerator, args):
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
     while epoch < args.num_epoch:
-        train_epoch(accelerator, epoch, model, optimizer, dataloader, loss_fn, args)
+        train_epoch(accelerator, epoch, tokenizer, model, optimizer, dataloader, loss_fn, args)
         if epoch != 0 and epoch % args.save_every == 0:
             save_checkpoint(model, optimizer, epoch, args.cpkt_save_path)
         epoch += 1

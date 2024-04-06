@@ -31,6 +31,21 @@ def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
+class MNIST_GPT_tokenizer:
+    def __init__(self, num_img_toks, special_toks):
+        self.model_in_special_toks = {tok : (num_img_toks + tok_idx) for tok_idx, tok in enumerate(special_toks)}
+        self.model_in_vocab_size = num_img_toks + len(self.model_in_special_toks)
+        self.model_out_vocab_size = num_img_toks
+
+    def encode_cls(self, inp):
+        cls_encoded = [self.model_in_special_toks[cls_tok] for cls_tok in inp]
+        return torch.tensor(cls_encoded, dtype=torch.long).reshape((-1, 1))
+    
+    def encode(self, x, y):
+        x = torch.tensor(x, dtype=torch.long)
+        y = self.encode_cls(y)
+        return torch.cat((y, x), dim=1)
+
 
 class MultiheadAttention(nn.Module):
     """Multihead attention module"""
@@ -96,24 +111,26 @@ class TransformerBlock(nn.Module):
 
 
 class TransformerModel(nn.Module):
-    def __init__(self, num_img_toks, special_toks, num_layers, max_seq_len, model_dim, num_heads, ff_dim, dropout=.1):
+    def __init__(self, model_in_vocab_size, model_out_vocab_size, num_layers, max_seq_len, model_dim, num_heads, ff_dim, dropout=.1):
         super().__init__()
-        # input vocabulary consists of pixel tokens and class tokens. 
-        self.model_in_special_toks = {tok : (num_img_toks + tok_idx) for tok_idx, tok in enumerate(special_toks)}
-        self.model_in_vocab_size = num_img_toks + len(self.model_in_special_toks)
         # main layers
-        self.tok_embed = nn.Embedding(self.model_in_vocab_size, model_dim)
+        self.tok_embed = nn.Embedding(model_in_vocab_size, model_dim)
         self.layers = nn.ModuleList(
             [TransformerBlock(model_dim, num_heads, ff_dim, dropout) for _ in range(num_layers)]
         )
-        # ouput vocabulary consists of only pixel tokens
-        self.model_out_vocab_size = num_img_toks
         # final layers for generation
         self.ln_f = nn.LayerNorm(model_dim)
-        self.gen_head = nn.Linear(model_dim, self.model_out_vocab_size)
+        self.gen_head = nn.Linear(model_dim, model_out_vocab_size)
         # Rotary posistional embeddings stuff
         self.max_seq_len = max_seq_len
-        self.freqs_cis = precompute_freqs_cis(model_dim // num_heads, self.max_seq_len + 2 * len(self.model_in_special_toks))
+        
+        # self.freqs_cis = precompute_freqs_cis(model_dim // num_heads, self.max_seq_len + 2 * len(self.model_in_special_toks))
+        
+        # TODO: Fix this stange formula (self.max_seq_len + 2 * num_special_toks)
+        # TODO: Fix persistent=True -> switch to False and see what happen
+        freqs_cis = precompute_freqs_cis(model_dim // num_heads, self.max_seq_len + 2)
+        self.register_buffer("freqs_cis", freqs_cis, persistent=True)
+
         # proper weight init
         self.apply(self._init_weights)
         for pn, p in self.named_parameters():
@@ -127,21 +144,10 @@ class TransformerModel(nn.Module):
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-
-    def encode_cls(self, inp):
-        encoded = [self.model_in_special_toks[cls_tok] for cls_tok in inp]
-        return torch.tensor(encoded, dtype=torch.long).reshape((-1, 1))
-
-    def forward(self, x, y):
-        """x, y have to be on model's device."""
-        bsz = x.shape[0] if x is not None else len(y)
-
-        if x is not None:
-            x = torch.cat((y, x), dim=1)
-        else:
-            x = y
-
-        _, seqlen = x.shape
+    
+    # TODO: assert seqlen < self.max_seq_len
+    def forward(self, x):
+        bsz, seqlen = x.shape
 
         h = self.tok_embed(x)
         self.freqs_cis = self.freqs_cis.to(h.device)
@@ -153,30 +159,19 @@ class TransformerModel(nn.Module):
         return final
 
     @torch.no_grad()
-    def generate(self, device, bsz=32, temperature=1.0, use_max=False):
-        """It is not always possible to get model's device. So it has to be provided."""
-        idx = None
-        cls_toks = list(self.model_in_special_toks.values())
-        cls_min = min(cls_toks)
-        cls_max = max(cls_toks) + 1
-        y = torch.randint(cls_min, cls_max, (bsz,1), dtype=torch.long, device=device)
-        max_new_tokens = 28 * 28;
-        t = tqdm(range(max_new_tokens), leave=False)
+    def generate(self, x, temperature=1.0):
+        max_new_toks = 28 * 28
+        t = tqdm(range(max_new_toks), leave=False)
         t.set_description("Generating samples")
+        
         for _ in t:
-            logits = self(idx, y)
+            logits = self(x)
             logits = logits[:, -1, :] / temperature
             # apply softmax to convert logits to (normalized) probabilities
             probs = F.softmax(logits, dim=-1)
             # sample from the distribution
-            if use_max:
-                idx_next = torch.argmax(probs, dim=-1, keepdim=True)
-            else:
-                idx_next = torch.multinomial(probs, num_samples=1)
+            x_next = torch.multinomial(probs, num_samples=1)
             # append sampled index to the running sequence and continue
-            if idx is not None:
-                idx = torch.cat((idx, idx_next), dim=1)
-            else:
-                idx = idx_next
+            x = torch.cat((x, x_next), dim=1)
 
-        return idx
+        return x
