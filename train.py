@@ -13,15 +13,15 @@ import torch.optim as optim
 from tqdm import tqdm
 
 from uitl import save_checkpoint, load_checkpoint, gradient_norm, prep_generated_img
-from accelerate import Accelerator
+import accelerate
 
 def get_parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num_epoch", type=int, default=150)
+    parser.add_argument("--num_epoch", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--scheduler_lr_warmup_steps", type=float, default=100)
+    parser.add_argument("--scheduler_lr_warmup_steps", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--log_to_wandb", type=bool, default=True)
+    parser.add_argument("--log_to_wandb", action="store_true")
     parser.add_argument("--wandb_api_key", type=str)
     parser.add_argument("--wandb_logs_per_epoch", type=int, default=2)
     # parser.add_argument("--dataloader_num_workers", type=int, default=8)
@@ -30,7 +30,7 @@ def get_parser():
     parser.add_argument("--transformer_num_heads", type=int, default=4)
     parser.add_argument("--transformer_ff_dim", type=int, default=512)
     parser.add_argument("--transformer_dropout", type=float, default=.1)
-    parser.add_argument("--continue_training", type=bool, default=False)
+    parser.add_argument("--continue_training", action="store_true")
     parser.add_argument("--cpkt_load_path", type=str, default="model.cpkt")
     parser.add_argument("--cpkt_save_path", type=str, default="model.cpkt")
     parser.add_argument("--save_every", type=int, default=10)
@@ -67,6 +67,13 @@ def get_tarining_config(args):
         "batch_size": args.batch_size,
     }
     return config
+
+def download_dataset(accelerator):
+    if accelerator.is_local_main_process:
+        ds_path = "MNIST/"
+        transforms = v2.Compose([v2.ToImage(), v2.ToDtype(torch.long)])
+        mnist_train = torchvision.datasets.MNIST(ds_path, train=True, download=True, transform=transforms)
+    accelerate.utils.wait_for_everyone()
 
 # TODO: set num_workers
 def prepare_dataset(args, tokenizer):
@@ -121,7 +128,7 @@ def train_step(accelerator, tokenizer, model, optimizer, batch, loss_fn):
 # TODO: add Scheduler
 # TODO: add GardNorm
 def train_epoch(accelerator, epoch, tokenizer, model, optimizer, dataloader, loss_fn, args):
-    t = tqdm(dataloader)
+    t = tqdm(dataloader, disable=not accelerator.is_local_main_process)
     t.set_description(f"Epoch: {epoch: >3}/{args.num_epoch}")
     
     for n, batch in enumerate(t):
@@ -139,8 +146,15 @@ def train(accelerator, args):
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         epoch = checkpoint['epoch']
+        if accelerator.is_local_main_process:
+            print("Checkpoint Loaded. Continue training from epoch: {epoch}")
 
+    download_dataset(accelerator)
     dataloader = prepare_dataset(args, tokenizer)
+
+    if accelerator.is_local_main_process:
+        num_params_M = sum([p.numel() for p in model.parameters()]) / 1e6
+        print(f"Model size: {num_params_M:.2f} M parameters")
     
     cls_weights = torch.ones((256))
     cls_weights[0] = .1
@@ -151,11 +165,11 @@ def train(accelerator, args):
     while epoch < args.num_epoch:
         train_epoch(accelerator, epoch, tokenizer, model, optimizer, dataloader, loss_fn, args)
         if epoch != 0 and epoch % args.save_every == 0:
-            save_checkpoint(model, optimizer, epoch, args.cpkt_save_path)
+            save_checkpoint(accelerator, model, optimizer, epoch, args.cpkt_save_path)
         epoch += 1
 
 if __name__ == "__main__":
     parser = get_parser()
     args = parser.parse_args()
-    accelerator = Accelerator()
+    accelerator = accelerate.Accelerator()
     train(accelerator, args)

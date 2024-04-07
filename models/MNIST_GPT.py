@@ -42,7 +42,7 @@ class MNIST_GPT_tokenizer:
         return torch.tensor(cls_encoded, dtype=torch.long).reshape((-1, 1))
     
     def encode(self, x, y):
-        x = torch.tensor(x, dtype=torch.long)
+        x = x.to(dtype=torch.long)
         y = self.encode_cls(y)
         return torch.cat((y, x), dim=1)
 

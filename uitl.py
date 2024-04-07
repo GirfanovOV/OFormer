@@ -3,16 +3,17 @@ from torchvision.utils import make_grid
 import torchvision.transforms as tvf
 import numpy as np
 
-def save_checkpoint(model, optimizer, epoch, path="model.cpkt"):
-    torch.save(
-        {
+def save_checkpoint(accelerator, model, optimizer, epoch, path="model.cpkt"):
+    accelerator.wait_for_everyone()
+    unwrapped_model = accelerator.unwrap_model(model)
+    cpkt = {
         "epoch" : epoch,
-        "model_state_dict" : model.state_dict(),
+        "model_state_dict" : unwrapped_model.state_dict(),
         "optimizer_state_dict" : optimizer.state_dict()
-        },
-        path
-    )
-    print(f"Epoch {epoch} | Training checkpoint saved at {path}")
+    }
+    accelerator.save(cpkt, path)
+    if accelerator.is_local_main_process:
+        print(f"Epoch {epoch} | Training checkpoint saved at {path}")
 
 def load_checkpoint(path="model.cpkt"):
     checkpoint = torch.load(path)
