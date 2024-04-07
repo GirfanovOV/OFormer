@@ -19,7 +19,7 @@ def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--num_epoch", type=int, default=150)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--lr_warmup_steps", type=float, default=100)
+    parser.add_argument("--scheduler_lr_warmup_steps", type=float, default=100)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--log_to_wandb", type=bool, default=True)
     parser.add_argument("--wandb_api_key", type=str)
@@ -63,7 +63,7 @@ def get_tarining_config(args):
     config = {
         "epochs": args.num_epoch,
         "lr": args.lr,
-        "lr_warmup_steps" : args.lr_warmup_steps,
+        "scheduler_lr_warmup_steps" : args.scheduler_lr_warmup_steps,
         "batch_size": args.batch_size,
     }
     return config
@@ -131,7 +131,7 @@ def train_epoch(accelerator, epoch, tokenizer, model, optimizer, dataloader, los
 def train(accelerator, args):
 
     model, tokenizer = get_model_and_tokenizer(args)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr_warmup_steps)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr)
 
     epoch = 0
     if args.continue_training:
