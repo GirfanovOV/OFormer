@@ -7,6 +7,8 @@ RUN apt-get update && apt-get install -y \
     vim \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install torch tqdm accelerate matplotlib wandb
+RUN conda install -c nvidia cuda-compiler
+
+RUN pip install torch tqdm accelerate matplotlib wandb deepspeed
 
 COPY . .
